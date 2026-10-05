@@ -1,71 +1,75 @@
+import urllib.request
+import tempfile
 import streamlit as st
-import tensorflow as tf
-from PIL import Image, ImageOps
 import numpy as np
+from PIL import Image
+import tensorflow as tf
+from tensorflow.keras.applications.resnet50 import preprocess_input, decode_predictions
 
-# Set page configuration
+# 1. App Configuration & Title
 st.set_page_config(page_title="ResNet50 Model Tester", layout="centered")
+st.title("🖼️ ResNet50 .h5 Model Tester")
+st.write("Load a custom ResNet50 `.h5` model from a URL and test it with images.")
 
-# 1. Load your trained .h5 model
-# Cache the model so it doesn't reload on every user interaction
+# 2. Sidebar Inputs for Model URL
+st.sidebar.header("Model Configuration")
+model_url = st.sidebar.text_input(
+    "Enter ResNet50 .h5 Model URL:",
+    value="https://googleapis.com"
+)
+
+# Cache the model loading so it doesn't redownload on every interaction
 @st.cache_resource
-def load_my_model():
-    # Replace 'path_to_your_model.h5' with your actual file name
-    model = tf.keras.models.load_model('path_to_your_model.h5')
-    return model
+def load_model_from_url(url):
+    try:
+        with st.spinner("Downloading and loading model... This may take a moment."):
+            # Create a temporary file to save the downloaded .h5 file
+            with tempfile.NamedTemporaryFile(suffix=".h5", delete=False) as tmp_file:
+                urllib.request.urlretrieve(url, tmp_file.name)
+                # Load the model structure + weights
+                # Note: If your file only contains weights, use tf.keras.applications.ResNet50() and load_weights() instead
+                model = tf.keras.models.load_model(tmp_file.name)
+        return model
+    except Exception as e:
+        st.error(f"Error loading model: {e}")
+        return None
 
-try:
-    model = load_my_model()
-    st.success("Model loaded successfully!")
-except Exception as e:
-    st.error(f"Error loading model: {e}")
-    st.info("Please ensure your .h5 file is in the same directory or provide the correct path.")
+# Load the model if URL is provided
+if model_url:
+    model = load_model_from_url(model_url)
+else:
+    model = None
+    st.info("Please enter a valid model URL in the sidebar.")
 
-# 2. UI Elements
-st.title("🖼️ ResNet50 Model Testing Dashboard")
-st.write("Upload an image to see your model's prediction.")
-
-uploaded_file = st.file_uploader("Choose an image...", type=["jpg", "jpeg", "png"])
-
-# 3. Image Preprocessing and Prediction
-if uploaded_file is not None:
-    # Display the uploaded image
-    image = Image.open(uploaded_file)
-    st.image(image, caption='Uploaded Image', use_column_width=True)
+# 3. Image Upload and Prediction Pipeline
+if model is not None:
+    uploaded_file = st.file_uploader("Choose an image to test...", type=["jpg", "jpeg", "png"])
     
-    st.write("⚙️ Processing and predicting...")
-    
-    # ResNet50 default input size is 224x224
-    size = (224, 224)
-    image = ImageOps.fit(image, size, Image.Resampling.LANCZOS)
-    
-    # Convert image to numpy array
-    img_array = np.asarray(image)
-    
-    # Ensure image has 3 channels (RGB)
-    if img_array.shape[-1] == 4:
-        img_array = img_array[:, :, :3]
+    if uploaded_file is not None:
+        # Display the uploaded image
+        image = Image.open(uploaded_file).convert("RGB")
+        st.image(image, caption="Uploaded Image", use_column_width=True)
         
-    # Add batch dimension (1, 224, 224, 3)
-    img_reshape = np.expand_dims(img_array, axis=0)
-    
-    # Apply ResNet50 specific preprocessing (scales pixels appropriately)
-    # Use this if your model was trained using tf.keras.applications.resnet50.preprocess_input
-    preprocess_input = tf.keras.applications.resnet50.preprocess_input
-    prepared_image = preprocess_input(img_reshape)
-    
-    # Make prediction
-    predictions = model.predict(prepared_image)
-    
-    # 4. Display Results
-    # Custom Logic: If your model is custom-trained, map predictions to your classes
-    st.subheader("Results")
-    
-    # Example for binary/multi-class outputs (Change this based on your specific model output)
-    st.write("Raw Model Output probabilities:", predictions)
-    
-    # If using standard ImageNet classes, uncomment the lines below:
-    # decode_predictions = tf.keras.applications.resnet50.decode_predictions
-    # label = decode_predictions(predictions, top=3)[0]
-    # for idx, res in enumerate(label):
-    #     st.write(f"**{idx+1}. {res[1]}**: {res[2]*100:.2f}%")
+        # Preprocess the image for ResNet50 (Target size: 224x224)
+        img_resized = image.resize((224, 224))
+        img_array = tf.keras.preprocessing.image.img_to_array(img_resized)
+        img_batch = np.expand_dims(img_array, axis=0)
+        img_preprocessed = preprocess_input(img_batch)
+        
+        # Run prediction
+        if st.button("Predict Class"):
+            with st.spinner("Running inference..."):
+                preds = model.predict(img_preprocessed)
+                
+                # Try decoding predictions (Works out-of-the-box if using ImageNet labels)
+                try:
+                    decoded_preds = decode_predictions(preds, top=3)[0]
+                    st.subheader("Top Predictions:")
+                    for i, (imagenet_id, label, score) in enumerate(decoded_preds):
+                        st.write(f"**{i+1}. {label.replace('_', ' ').title()}**: {score*100:.2f}%")
+                except Exception:
+                    # Fallback for custom trained models with custom output shapes
+                    st.subheader("Raw Output (Custom Classes):")
+                    predicted_class = np.argmax(preds, axis=1)[0]
+                    st.write(f"Predicted Class Index: **{predicted_class}**")
+                    st.write("Raw probabilities:", preds)
